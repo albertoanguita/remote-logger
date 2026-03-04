@@ -29,7 +29,7 @@ public class LogQueryDto : SecuredDto
     
     public string? Module { get; set; }
     
-    public int? LogLevel { get; set; }
+    public sbyte? LogLevel { get; set; }
     
     public string? Message { get; set; }
     

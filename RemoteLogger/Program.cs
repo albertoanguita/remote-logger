@@ -11,6 +11,7 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
+var appStatus = AppStatus.Initializing;
 
 var authHeader = app.Configuration.GetSection("AuthHeader").Value;
 
@@ -34,44 +35,73 @@ app.UseHttpsRedirection();
 // todo initialize. Check DB connection and table. Set state
 
 
+
+
 // todo to config
-var connectionStr = "Server=127.0.0.1;Port=3307;Database=test;User=root;Password=my-secret-pw;";
-var dbWrapper = new DbWrapper(connectionStr, "RemoteLog");
-
-
-app.MapGet("/status", () => "Ok");
-
-
-app.MapPost("/log", IResult (LogDto logDto) =>
+var connectionStr = "mongodb://root:5Un49G7AuPP8@localhost:27017";
+// var connectionStr = "Server=127.0.0.1;Port=3307;Database=test;User=root;Password=my-secret-pw;";
+MongoWrapper? dbWrapper = null;
+try
 {
-    // store posts on DB
-    app.Logger.LogTrace("POST /log received log");
-    if (!CheckAuthorization(logDto))
-    {
-        return Results.Unauthorized();
-    }
-    logDto = ValidateLogDto(logDto);
-    app.Logger.LogDebug("POST /log validated log {LogDto}", logDto);
-    var res = dbWrapper.StoreLog(logDto);
-    app.Logger.LogDebug("POST /log stored log. Result: {result}", res);
-
-    return TypedResults.Ok(res);
-});
-
-app.MapPost("/query-logs", IResult (LogQueryDto logQueryDto) =>
+    dbWrapper = new MongoWrapper(connectionStr, "RemoteLog");
+    appStatus = AppStatus.Ok;
+}
+catch (Exception e)
 {
-    app.Logger.LogTrace("POST /query-logs received log query");
-    if (!CheckAuthorization(logQueryDto))
+    appStatus = AppStatus.DatabaseError;
+}
+
+app.MapGet("/status", () => appStatus.ToString());
+
+if (appStatus == AppStatus.Ok)
+{
+    app.MapPost("/log", async Task<IResult> (LogDto logDto) =>
     {
-        return Results.Unauthorized();
-    }
-    logQueryDto = ValidateLogQueryDto(logQueryDto);
-    app.Logger.LogDebug("POST /query-logs validated log query {LogQueryDto}", logQueryDto);
-    var logs = dbWrapper.GetLogs(logQueryDto);
-    app.Logger.LogDebug("POST /query-logs successfully retrieved logs. Count: {LogsLength}", logs.Length);
+        // store posts on DB
+        app.Logger.LogTrace("POST /log received log");
+        if (!CheckAuthorization(logDto))
+        {
+            return Results.Unauthorized();
+        }
+        logDto = ValidateLogDto(logDto);
+        app.Logger.LogDebug("POST /log validated log {LogDto}", logDto);
+        var res = await dbWrapper!.InsertLogAsync(new LogEntry()
+        {
+            Timestamp = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(logDto.Timestamp),
+            System = logDto.System,
+            Module = logDto.Module,
+            Level = logDto.LogLevel,
+            Message = logDto.Message
+        });
+        app.Logger.LogDebug("POST /log stored log. Result: {result}", res);
+
+        return TypedResults.Ok(res);
+    });
+
+    app.MapPost("/query-logs", async Task<IResult> (LogQueryDto logQueryDto) =>
+    {
+        app.Logger.LogTrace("POST /query-logs received log query");
+        if (!CheckAuthorization(logQueryDto))
+        {
+            return Results.Unauthorized();
+        }
+        logQueryDto = ValidateLogQueryDto(logQueryDto);
+        app.Logger.LogDebug("POST /query-logs validated log query {LogQueryDto}", logQueryDto);
+        var logs = await dbWrapper!.GetLogsAsync(
+            logQueryDto.System, 
+            logQueryDto.Module, 
+            logQueryDto.LogLevel, 
+            logQueryDto.Message, 
+            logQueryDto.From != null ? new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(logQueryDto.From.Value) : null,
+            logQueryDto.To != null ? new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(logQueryDto.To.Value) : null,
+            logQueryDto.Limit, 
+            logQueryDto.Offset, 
+            logQueryDto.Asc);
+        app.Logger.LogDebug("POST /query-logs successfully retrieved logs. Count: {LogsLength}", logs.Count);
     
-    return TypedResults.Ok(logs);
-});
+        return TypedResults.Ok(logs);
+    });
+}
 
 
 bool CheckAuthorization(SecuredDto dto)

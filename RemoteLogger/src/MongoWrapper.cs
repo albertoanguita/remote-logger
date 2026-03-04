@@ -1,11 +1,8 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Threading.Tasks;
-using MongoDB.Bson;
+﻿using MongoDB.Bson;
 using MongoDB.Bson.Serialization.Attributes;
 using MongoDB.Driver;
 
-namespace HomesecEngine.Data
+namespace RemoteLogger
 {
     // Modelo de entrada de log almacenado en MongoDB
     public class LogEntry
@@ -16,16 +13,17 @@ namespace HomesecEngine.Data
         [BsonElement("timestamp")]
         public DateTime Timestamp { get; set; }
 
+        [BsonElement("system")]
+        public string? System { get; set; }
+
+        [BsonElement("module")]
+        public string? Module { get; set; }
+
         [BsonElement("level")]
-        public string Level { get; set; }
+        public sbyte? Level { get; set; }
 
         [BsonElement("message")]
-        public string Message { get; set; }
-
-        [BsonElement("source")]
-        public string Source { get; set; }
-
-        // ...existing code...
+        public required string Message { get; set; }
     }
 
     // Wrapper simple para operaciones de logs en MongoDB
@@ -33,7 +31,7 @@ namespace HomesecEngine.Data
     {
         private readonly IMongoCollection<LogEntry> _collection;
 
-        public MongoWrapper(string connectionString, string databaseName = "homesec", string collectionName = "logs")
+        public MongoWrapper(string connectionString, string databaseName, string collectionName = "logs")
         {
             if (string.IsNullOrWhiteSpace(connectionString)) throw new ArgumentException("connectionString required", nameof(connectionString));
             var client = new MongoClient(connectionString);
@@ -53,26 +51,67 @@ namespace HomesecEngine.Data
             _collection.Indexes.CreateOne(levelIndex);
         }
 
-        public async Task InsertLogAsync(LogEntry entry)
+        public async Task<bool> InsertLogAsync(LogEntry entry)
         {
             if (entry == null) throw new ArgumentNullException(nameof(entry));
             if (entry.Timestamp == default) entry.Timestamp = DateTime.UtcNow;
-            await _collection.InsertOneAsync(entry).ConfigureAwait(false);
+            try
+            {
+                await _collection.InsertOneAsync(entry).ConfigureAwait(false);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
-        public async Task<List<LogEntry>> GetLogsAsync(DateTime? from = null, DateTime? to = null, string level = null, int limit = 100)
+        public async Task<List<LogEntry>> GetLogsAsync(
+            string? system, 
+            string? module, 
+            sbyte? level, 
+            string? message, 
+            DateTime? from, 
+            DateTime? to, 
+            int? limit, 
+            int? offset, 
+            bool? asc)
         {
+            limit ??= 100;
+            offset ??= 0;
+            asc ??= false;
+            
             var filter = Builders<LogEntry>.Filter.Empty;
+            
+            if (!string.IsNullOrWhiteSpace(system))
+                filter &= Builders<LogEntry>.Filter.Eq(e => e.System, system);
 
-            if (from.HasValue) filter &= Builders<LogEntry>.Filter.Gte(e => e.Timestamp, from.Value);
-            if (to.HasValue) filter &= Builders<LogEntry>.Filter.Lte(e => e.Timestamp, to.Value);
-            if (!string.IsNullOrWhiteSpace(level)) filter &= Builders<LogEntry>.Filter.Eq(e => e.Level, level);
+            if (!string.IsNullOrWhiteSpace(module))
+                filter &= Builders<LogEntry>.Filter.Eq(e => e.Module, module);
+            
+            if (level.HasValue) 
+                filter &= Builders<LogEntry>.Filter.Eq(e => e.Level, level);
 
-            return await _collection.Find(filter)
-                                    .SortByDescending(e => e.Timestamp)
-                                    .Limit(limit)
-                                    .ToListAsync()
-                                    .ConfigureAwait(false);
+            if (!string.IsNullOrWhiteSpace(message))
+                filter &= Builders<LogEntry>.Filter.Regex(e => e.Message, new BsonRegularExpression(message, "i"));
+
+            if (from.HasValue) 
+                filter &= Builders<LogEntry>.Filter.Gte(e => e.Timestamp, from.Value);
+            
+            if (to.HasValue) 
+                filter &= Builders<LogEntry>.Filter.Lte(e => e.Timestamp, to.Value);
+
+            var query = _collection.Find(filter);
+            
+            if (asc.Value)
+                query = query.SortBy(e => e.Timestamp);
+            else
+                query = query.SortByDescending(e => e.Timestamp);
+
+            return await query.Skip(offset)
+                             .Limit(limit)
+                             .ToListAsync()
+                             .ConfigureAwait(false);
         }
 
         public async Task<LogEntry> GetByIdAsync(string id)
@@ -81,7 +120,5 @@ namespace HomesecEngine.Data
             if (!ObjectId.TryParse(id, out var oid)) return null;
             return await _collection.Find(e => e.Id == oid).FirstOrDefaultAsync().ConfigureAwait(false);
         }
-
-        // ...existing code...
     }
 }
