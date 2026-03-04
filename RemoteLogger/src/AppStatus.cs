@@ -2,7 +2,6 @@
 
 public enum AppStatus
 {
-    Initializing,
     Ok,
     DatabaseError
 }

@@ -1,6 +1,8 @@
 using RemoteLogger;
 using RemoteLogger.dto;
 
+const string LocalConnectionStr = "mongodb://root:5Un49G7AuPP8@localhost:27017";
+
 var builder = WebApplication.CreateBuilder(args);
 
 // docker build -f Dockerfile -t remote-logger:v1 ..
@@ -11,17 +13,26 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
-var appStatus = AppStatus.Initializing;
+var appStatus = AppStatus.Ok;
+
+var logger = app.Services.GetRequiredService<ILogger<Program>>();
+var env = app.Environment;
+
+logger.LogInformation("Starting RemoteLogger...");
 
 var authHeader = app.Configuration.GetSection("AuthHeader").Value;
 
 if (authHeader == null)
 {
-    app.Logger.LogWarning("Running app with no authorization header. All requests will be permitted");
+    logger.LogWarning("Running app with no authorization header. All requests will be permitted");
+}
+else
+{
+    logger.LogWarning("Running app with authorization header. All requests must include the required auth header to be processed");
 }
 
 // Configure the HTTP request pipeline.
-if (app.Environment.IsDevelopment())
+if (env.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
@@ -32,22 +43,22 @@ app.UseHttpsRedirection();
 // todo set this
 // app.UseAuthorization();
 
-// todo initialize. Check DB connection and table. Set state
+var connectionStr = Environment.GetEnvironmentVariable("CONNECTION_STR")
+                    ??
+                    LocalConnectionStr;
 
+logger.LogInformation("ENV for connection str set: {b}", Environment.GetEnvironmentVariable("CONNECTION_STR") != null);
+logger.LogInformation("Using connection str: {connectionStr}", connectionStr);
 
-
-
-// todo to config
-var connectionStr = "mongodb://root:5Un49G7AuPP8@localhost:27017";
-// var connectionStr = "Server=127.0.0.1;Port=3307;Database=test;User=root;Password=my-secret-pw;";
 MongoWrapper? dbWrapper = null;
 try
 {
     dbWrapper = new MongoWrapper(connectionStr, "RemoteLog");
-    appStatus = AppStatus.Ok;
+    logger.LogInformation("Connection with database established successfully");
 }
 catch (Exception e)
 {
+    logger.LogError("Failed to connect to database. Exception: {e}", e);
     appStatus = AppStatus.DatabaseError;
 }
 
@@ -78,15 +89,15 @@ if (appStatus == AppStatus.Ok)
         return TypedResults.Ok(res);
     });
 
-    app.MapPost("/query-logs", async Task<IResult> (LogQueryDto logQueryDto) =>
+    app.MapPost("/query", async Task<IResult> (LogQueryDto logQueryDto) =>
     {
-        app.Logger.LogTrace("POST /query-logs received log query");
+        app.Logger.LogTrace("POST /query received log query");
         if (!CheckAuthorization(logQueryDto))
         {
             return Results.Unauthorized();
         }
         logQueryDto = ValidateLogQueryDto(logQueryDto);
-        app.Logger.LogDebug("POST /query-logs validated log query {LogQueryDto}", logQueryDto);
+        app.Logger.LogDebug("POST /query validated log query {LogQueryDto}", logQueryDto);
         var logs = await dbWrapper!.GetLogsAsync(
             logQueryDto.System, 
             logQueryDto.Module, 
@@ -97,7 +108,7 @@ if (appStatus == AppStatus.Ok)
             logQueryDto.Limit, 
             logQueryDto.Offset, 
             logQueryDto.Asc);
-        app.Logger.LogDebug("POST /query-logs successfully retrieved logs. Count: {LogsLength}", logs.Count);
+        app.Logger.LogDebug("POST /query successfully retrieved logs. Count: {LogsLength}", logs.Count);
     
         return TypedResults.Ok(logs);
     });
